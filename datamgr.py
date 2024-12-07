@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"]="1"
 from pygame.math import Vector2 as Vec2
 from math import pi, sin as _sin, cos as _cos, floor, cbrt
@@ -35,6 +36,30 @@ def cos(deg):
 def move_step(direction):  # 向 direction° 方向移动一个单位
     return Vec2(cos(direction), sin(direction))
 
+
+def print_progress(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█', unfill=' ', done='已完成\n'):
+    """
+    在控制台打印进度条
+    iteration: 当前迭代次数
+    total: 总迭代次数
+    prefix: 进度条前缀字符串
+    suffix: 进度条后缀字符串
+    decimals: 进度的小数点位数
+    length: 进度条的总长度
+    fill: 进度条的填充字符
+    unfill: 进度条的空白字符
+    done: 完成时的额外显示
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = fill * filled_length + unfill * (length - filled_length)
+    sys.stdout.write('\r%s[%s] %s%%%s' % (prefix, bar, percent, suffix))
+    sys.stdout.flush()
+    # 在完成时打印新行
+    if iteration == total:
+        sys.stdout.write(done)
+
+
 class ApofaiDtmgr:
     def __init__(self,path=None):
         self.path=path
@@ -57,7 +82,9 @@ class ApofaiDtmgr:
             self.secondaryTrackColor=None
             self.midspin=False
             self.hold=False
+            self.deltapos=Vec2(0,0)
             self.pos=Vec2(0,0)
+            self.volume=-1
         
         def update(self,prevtile):
             if prevtile!=None:
@@ -76,11 +103,13 @@ class ApofaiDtmgr:
                     self.trackColor=prevtile.trackColor
                 if self.secondaryTrackColor==None:
                     self.secondaryTrackColor=prevtile.secondaryTrackColor
-                self.pos+=prevtile.pos+move_step(self.angle)
+                self.pos=prevtile.pos+move_step(self.angle)+self.deltapos
                 deltabeat=angleoffset/180+self.pause
                 self.offset=prevtile.offset+deltabeat*60/self.bpm
                 self.beat=prevtile.beat+deltabeat
-                print(self.bpm,self.pause,self.angle,self.twirl,self.midspin,self.hold,deltaangle,deltabeat,self.offset,self.beat)
+                if self.volume<0:
+                    self.volume=prevtile.volume
+                #print(self.bpm,self.pause,self.angle,self.twirl,self.midspin,self.hold,deltaangle,deltabeat,self.offset,self.beat)
                 
             else:
                 if self.stdbpm==None:
@@ -95,6 +124,8 @@ class ApofaiDtmgr:
                 self.pos=Vec2(0,0)
                 self.offset=0
                 self.beat=0
+                if self.volume<0:
+                    self.volume=0
                 
         
     def process_data(self) -> bool:
@@ -104,6 +135,7 @@ class ApofaiDtmgr:
             ) as f:
                 string = f.read()
                 string = re.sub(",(?=\\s*?[}\\]])", "", string)  # 删除尾随逗号
+                #string = re.sub("\\}(?=\\s+\\{)", "},", string)  # 缺逗号补齐
                 self.level = json.loads(string, strict=False)
         except UnicodeDecodeError:
             print("错误", "该谱面似乎没有使用utf-8-sig编码，所以不能解析。")
@@ -119,6 +151,7 @@ class ApofaiDtmgr:
         self.tiles = [self.Tile()]
         self.tiles[0].trackColor=self.level["settings"]["trackColor"] if "trackColor" in self.level["settings"].keys() else "#debb7b"
         self.tiles[0].secondaryTrackColor=self.level["settings"]["secondaryTrackColor"] if "secondaryTrackColor" in self.level["settings"].keys() else "#ffffff"
+        self.tiles[0].volume=self.level["settings"]["volume"] if "volume" in self.level["settings"].keys() else 100
 
         path_data_dict = {'R': 0, 'p': 15, 'J': 30, 'E': 45, 'T': 60, 'o': 75, 'U': 90, 'q': 105, 'G': 120, 'Q': 135,
                           'H': 150, 'W': 165, 'L': 180, 'x': 195, 'N': 210, 'Z': 225, 'F': 240, 'V': 255, 'D': 270,
@@ -138,12 +171,16 @@ class ApofaiDtmgr:
             self.tiles.clear()
             return False
         
-        for index in range(len(self.level["angleData"] if "angleData" in self.level else self.level["pathData"])):
+        ubound=len(self.level["angleData"] if "angleData" in self.level else self.level["pathData"])
+        for index in range(ubound):
 
             self.tiles.append(self.Tile(angledata[index]))
+            print_progress(index+1,ubound,"正在读取轨道（1/3）")
 
         self.tiles[0].stdbpm = self.inibpm# * self.pitch / 100
 
+        ubound=len(self.level["actions"])
+        index=1
         for action in self.level["actions"]:
             try:
                 tile = self.tiles[action["floor"]+1]
@@ -177,17 +214,22 @@ class ApofaiDtmgr:
                         tile.trackColor=action["trackColor"]
                         tile.secondaryTrackColor=action["secondaryTrackColor"]
                     case "PositionTrack":
-                        tile.pos=Vec2(*action["positionOffset"])
+                        tile.deltapos=Vec2(*action["positionOffset"])
                     case "Hold":
                         tile.hold=True
                         tile.pause+=action["duration"]*2
                         #tile.pos=move_step(tile.angle)*action["distanceMultiplier"]/100*(1+action["duration"]*2)
+                    case "SetHitsound":
+                        tile.volume=action["hitsoundVolume"]
             except IndexError:
                 pass
+            print_progress(index+1,ubound,"正在添加事件（2/3）")
+            index+=1
 
-        
-
-        for i in range(len(self.tiles)):
+        ubound=len(self.tiles)
+        for i in range(ubound):
             self.tiles[i].update(self.tiles[i-1] if i>0 else None)
+            print_progress(i+1,ubound,"正在更新数据（3/3）",done="谱面载入完成！\n")
 
+        print(f"物量：{len(self.tiles)}")
         return True
